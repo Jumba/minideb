@@ -45,6 +45,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - id: owner
+        name: Lowercase owner
+        run: echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - name: Use local build action
         id: build
         uses: ./.github/actions/build
@@ -52,56 +55,56 @@ jobs:
           dist: "${{ matrix.dist }}"
           platform: "${{ matrix.arch }}"
           is_latest: ${{ matrix.dist == env.LATEST }}
-      - name: Push to DockerHUB
-        if: github.repository == 'bitnami/minideb' && github.ref == 'refs/heads/master'
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push to GHCR
+        shell: bash
         env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          DOCKER_REGISTRY: docker.io
-          DOCKER_CONTENT_TRUST_REPOSITORY_KEY: ${{ secrets.DOCKER_CONTENT_TRUST_REPOSITORY_KEY }}
-          DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE: ${{ secrets.DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE }}
+          OWNER: ${{ steps.owner.outputs.owner_lc }}
         run: |
-          bash pushone "${{ matrix.dist }}" "${{ matrix.arch }}"
-          if ${{ matrix.dist == env.LATEST }} ; then
-             bash pushone "latest" "${{ matrix.arch }}"
-          fi
-      - name: Push to AWS
-        if: github.repository == 'bitnami/minideb' && github.ref == 'refs/heads/master'
-        env:
-          DOCKER_USERNAME: AWS
-          DOCKER_REGISTRY: public.ecr.aws
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_PUBLIC_GALLERY_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PUBLIC_GALLERY_SECRET_KEY }}
-        run: |
-          # AWS login
-          export DOCKER_PASSWORD="$(aws ecr-public get-login-password --region us-east-1)"
-          bash pushone "${{ matrix.dist }}" "${{ matrix.arch }}"
-          if ${{ matrix.dist == env.LATEST }} ; then
-             bash pushone "latest" "${{ matrix.arch }}"
+          set -euo pipefail
+          dist='${{ matrix.dist }}'
+          arch='${{ matrix.arch }}'
+          src="bitnami/minideb:${dist}-${arch}"
+          dst="ghcr.io/${OWNER}/devops/minideb:${dist}-${arch}"
+          echo "Tagging $src -> $dst"
+          docker tag "$src" "$dst"
+          docker push "$dst"
+          if [[ '${{ matrix.dist }}' == '${{ env.LATEST }}' ]]; then
+            src_latest="bitnami/minideb:latest-${arch}"
+            dst_latest="ghcr.io/${OWNER}/devops/minideb:latest-${arch}"
+            echo "Tagging $src_latest -> $dst_latest"
+            docker tag "$src_latest" "$dst_latest"
+            docker push "$dst_latest"
           fi
   deploy_manifests:
     runs-on: ubuntu-24.04
     needs: [ build_multiarch ]
-    if: github.repository == 'bitnami/minideb' && github.ref == 'refs/heads/master'
+    # Always publish manifests to GHCR
+    if: github.ref == 'refs/heads/master'
 
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-      - name: Push Manifests to DockerHUB
+      - id: owner
+        name: Lowercase owner
+        run: echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push Manifests to GHCR
         env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          DOCKER_REGISTRY: docker.io
+          DOCKER_USERNAME: ${{ github.actor }}
+          DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_REGISTRY: ghcr.io
+          BASENAME: ${{ steps.owner.outputs.owner_lc }}/devops/minideb
         run: |
-          DISTS="bullseye bookworm trixie latest" bash pushmanifest
-      - name: Push Manifests to AWS
-        env:
-          DOCKER_USERNAME: AWS
-          DOCKER_REGISTRY: public.ecr.aws
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_PUBLIC_GALLERY_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PUBLIC_GALLERY_SECRET_KEY }}
-        run: |
-          # AWS login
-          export DOCKER_PASSWORD="$(aws ecr-public get-login-password --region us-east-1)"
           DISTS="bullseye bookworm trixie latest" bash pushmanifest
   # If the CI Pipeline does not succeed we should notify the interested agents
   notify:
