@@ -87,7 +87,17 @@ jobs:
             echo "Pushing ghcr.io/${OWNER}/devops/minideb:${dist}"
             # Re-tag and push per-arch images, then create and push manifest
             for arch in amd64 arm64; do
-              docker tag bitnami/minideb:${dist}-${arch} ghcr.io/${OWNER}/devops/minideb:${dist}-${arch}
+              src=""
+              if docker image inspect bitnami/minideb:${dist}-${arch} >/dev/null 2>&1; then
+                src=bitnami/minideb:${dist}-${arch}
+              elif docker image inspect devops/minideb:${dist}-${arch} >/dev/null 2>&1; then
+                src=devops/minideb:${dist}-${arch}
+              else
+                echo "::error::Source image not found for ${dist}-${arch}. Expected bitnami/devops local tags."
+                exit 1
+              fi
+              echo "Tagging $src -> ghcr.io/${OWNER}/devops/minideb:${dist}-${arch}"
+              docker tag "$src" ghcr.io/${OWNER}/devops/minideb:${dist}-${arch}
               docker push ghcr.io/${OWNER}/devops/minideb:${dist}-${arch}
             done
             # Create and push multi-arch manifest
