@@ -1,0 +1,98 @@
+name: Build/Publish Minideb to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      dists:
+        description: "Comma-separated dists (e.g., bookworm,bullseye)"
+        required: false
+        type: string
+      platforms:
+        description: "Platforms to build (comma-separated)"
+        default: "linux/amd64,linux/arm64"
+        required: false
+        type: string
+  push:
+    branches: [ main ]
+    paths:
+      - '**'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - id: owner
+        name: Lowercase owner
+        run: echo "owner_lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: vars
+        name: Resolve dists and platforms
+        shell: bash
+        run: |
+          dists='${{ inputs.dists }}'
+          if [[ -z "$dists" ]]; then dists='bookworm'; fi
+          dists_json=$(printf "%s" "$dists" | tr ',' '\n' | sed '/^\s*$/d' | jq -R . | jq -cs .)
+          echo "dists=${dists_json}" >> "$GITHUB_OUTPUT"
+          plats='${{ inputs.platforms }}'
+          plats=${plats:-linux/amd64,linux/arm64}
+          echo "platforms=$plats" >> "$GITHUB_OUTPUT"
+
+      - name: Build distributions
+        shell: bash
+        env:
+          OWNER: ${{ steps.owner.outputs.owner_lc }}
+          PLATFORMS: ${{ steps.vars.outputs.platforms }}
+        run: |
+          set -euo pipefail
+          mapfile -t DISTS < <(echo '${{ steps.vars.outputs.dists }}' | jq -r '.[]')
+          IFS=',' read -r -a plats <<< "${PLATFORMS}"
+          for dist in "${DISTS[@]}"; do
+            for p in "${plats[@]}"; do
+              arch="${p##*/}"
+              echo "Building minideb:${dist}-${arch}"
+              ./qemu_build "$dist" "$arch"
+            done
+          done
+
+      - name: Push to GHCR
+        shell: bash
+        env:
+          OWNER: ${{ steps.owner.outputs.owner_lc }}
+        run: |
+          set -euo pipefail
+          # pushone/pushall expect tags built and present locally
+          for dist in $(echo '${{ steps.vars.outputs.dists }}' | jq -r '.[]'); do
+            echo "Pushing ghcr.io/${OWNER}/devops/minideb:${dist}"
+            # Re-tag and push per-arch images, then create and push manifest
+            for arch in amd64 arm64; do
+              docker tag bitnami/minideb:${dist}-${arch} ghcr.io/${OWNER}/devops/minideb:${dist}-${arch}
+              docker push ghcr.io/${OWNER}/devops/minideb:${dist}-${arch}
+            done
+            # Create and push multi-arch manifest
+            docker manifest create ghcr.io/${OWNER}/devops/minideb:${dist} \
+              --amend ghcr.io/${OWNER}/devops/minideb:${dist}-amd64 \
+              --amend ghcr.io/${OWNER}/devops/minideb:${dist}-arm64
+            docker manifest push ghcr.io/${OWNER}/devops/minideb:${dist}
+          done
