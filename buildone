@@ -33,9 +33,10 @@ set -e
 set -u
 set -o pipefail
 
-# Use our internal registry namespace for local tagging
-# Final pushes will include the registry host via push scripts
-BASENAME=devops/minideb
+# Repository namespace for local tagging
+# Respect BASENAME from environment (set by CI composite action),
+# default to bitnami/minideb for local/dev runs. Push scripts override as needed.
+BASENAME=${BASENAME:-bitnami/minideb}
 
 mkdir -p build
 
